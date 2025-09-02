@@ -1,0 +1,116 @@
+import os, sys, argparse, numpy as np, pydicom
+from matplotlib import pyplot as plt
+from PIL import Image
+
+# ---- filename base (updated to handle different formats) ----
+def build_base(fname):
+    root = os.path.splitext(os.path.basename(fname))[0]
+    parts = root.split("_")
+    
+    if len(parts) >= 3:
+        # Handle format like "HH55078_007_Abdtrans"
+        if parts[0].startswith('HH'):
+            pid = f"PAS{parts[0][2:]}"  # Extract number after HH
+            v = parts[1]
+            # Extract first digit from third part
+            g = 0
+            s = 0
+            for ch in parts[2]:
+                if ch.isdigit():
+                    g = int(ch)
+                    break
+            return f"{pid}_{v}_{g}_{s}"
+        else:
+            # Original logic for P123_v_g_s format
+            p, v, t = parts
+            pid = f"PAS{p[3:]}"
+            g = int(t[0])
+            s = 0
+            for ch in t[1:]:
+                if ch.isdigit():
+                    s = int(ch)
+                    break
+            return f"{pid}_{v}_{g}_{s}"
+    else:
+        # Fallback for other formats
+        return f"PAS{hash(root) % 1000:03d}_v1_0_0"
+
+# ---- load frames from a DICOM (unchanged logic) ----
+def load_frames(ds):
+    arr = ds.pixel_array
+
+    if arr.ndim == 2:                      # single frame gray
+        frames = [arr]
+
+    elif arr.ndim == 3:
+        if arr.shape[-1] in (3, 4):        # (H, W, 3/4) -> one RGB frame
+            frames = [arr[..., :3]]
+        else:                               # (N, H, W) stack
+            frames = [arr[i] for i in range(arr.shape[0])]
+
+    elif arr.ndim == 4:                     # (N, H, W, 3/4)
+        frames = [arr[i, ..., :3] for i in range(arr.shape[0])]
+
+    else:
+        frames = []
+
+    # convert any RGB frame to grayscale the same way (mean over channels)
+    out = []
+    for f in frames:
+        if f.ndim == 3:
+            f = np.mean(f, axis=-1)
+        out.append(f)
+    return out
+
+# ---- save frames as PNGs (unchanged vmin/vmax + cmap) ----
+def save_pngs(frames, base, out_dir):
+    os.makedirs(out_dir, exist_ok=True)
+    written = []
+    for i, f in enumerate(frames, 1):
+        out_name = f"{base}_frame_{i:03d}.png"
+        out_path = os.path.join(out_dir, out_name)
+        plt.imsave(out_path, f, cmap="gray", vmin=f.min(), vmax=f.max())
+        written.append(out_path)
+    return written
+
+# ---- crop PNGs with the exact crop box ----
+def crop_pngs(files, out_dir, top=65, left=66, right=150):
+    os.makedirs(out_dir, exist_ok=True)
+    written = []
+    for fp in files:
+        img = Image.open(fp)
+        w, h = img.size
+        # crop(left, top, right, bottom) -> right is x-coordinate, so use w - right
+        cropped = img.crop((left, top, w - right, h))
+        out_path = os.path.join(out_dir, os.path.basename(fp))
+        cropped.save(out_path)
+        written.append(out_path)
+    return written
+
+def process_single_dcm(dcm_path, out_raw="Processed_PNGs", out_cropped="Processed_PNGs_cropped"):
+    ds = pydicom.dcmread(dcm_path)
+    frames = load_frames(ds)
+    if not frames:
+        return [], []
+
+    base = build_base(os.path.basename(dcm_path))
+    raw_files = save_pngs(frames, base, out_raw)
+    cropped_files = crop_pngs(raw_files, out_cropped, top=65, left=66, right=150)
+    return raw_files, cropped_files
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dcm", required=True, help="path to a single .dcm file")
+    ap.add_argument("--out-raw", default="Processed_PNGs")
+    ap.add_argument("--out-cropped", default="Processed_PNGs_cropped")
+    args = ap.parse_args()
+
+    try:
+        raw_files, cropped_files = process_single_dcm(args.dcm, args.out_raw, args.out_cropped)
+        print(f"wrote {len(raw_files)} PNG frames to {args.out_raw}")
+        print(f"wrote {len(cropped_files)} cropped PNGs to {args.out_cropped}")
+    except Exception as e:
+        print(f"failed on {args.dcm}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+

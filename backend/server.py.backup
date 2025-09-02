@@ -1,0 +1,39 @@
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+import os
+import shutil
+import sys
+import os
+sys.path.append(os.path.dirname(__file__))
+from process_dcm import process_single_dcm
+
+app = FastAPI(title="Figo AI Backend")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+UPLOAD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "uploads"))
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+@app.post("/upload-dcm")
+async def upload_dcm(file: UploadFile = File(...)):
+    if not file.filename.lower().endswith(".dcm"):
+        raise HTTPException(status_code=400, detail="Only .dcm files are supported")
+
+    dest_path = os.path.join(UPLOAD_DIR, file.filename)
+    with open(dest_path, "wb") as out:
+        shutil.copyfileobj(file.file, out)
+
+    raw_files, cropped_files = process_single_dcm(dest_path)
+    return JSONResponse({
+        "raw_files": raw_files,
+        "cropped_files": cropped_files
+    })
+
+
