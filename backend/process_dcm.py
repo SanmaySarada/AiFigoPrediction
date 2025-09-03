@@ -38,7 +38,13 @@ def load_frames(ds):
     else:
         frames = []
 
-    return frames
+    # convert any RGB frame to grayscale the same way (mean over channels)
+    out = []
+    for f in frames:
+        if f.ndim == 3:
+            f = np.mean(f, axis=-1)
+        out.append(f)
+    return out
 
 # ---- save frames as PNGs (exact match to your reference) ----
 def save_pngs(frames, base, out_dir):
@@ -47,9 +53,6 @@ def save_pngs(frames, base, out_dir):
     for i, f in enumerate(frames, 1):
         if cancel_event.is_set():
             break
-            
-        if f.ndim == 3:  # RGB to grayscale
-            f = np.mean(f, axis=-1)
 
         out_name = f"{base}_frame_{i:03d}.png"
         out_path = os.path.join(out_dir, out_name)
