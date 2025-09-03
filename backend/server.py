@@ -6,11 +6,8 @@ import shutil
 import sys
 import os
 import asyncio
-import base64
-from io import BytesIO
-from PIL import Image
+import subprocess
 sys.path.append(os.path.dirname(__file__))
-from process_dcm import process_single_dcm, cancel_event
 
 app = FastAPI(title="Figo AI Backend")
 
@@ -24,6 +21,108 @@ app.add_middleware(
 
 UPLOAD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "uploads"))
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+def process_dcm_with_python311(dcm_path):
+    """Process DICOM file using Python 3.11 with correct package versions"""
+    try:
+        # Create a Python 3.11 script to process the DICOM
+        script_content = f'''
+import os, sys, numpy as np, pydicom
+from threading import Event
+from matplotlib import pyplot as plt
+from PIL import Image
+
+# Cooperative cancellation support
+cancel_event: Event = Event()
+
+def load_frames(ds):
+    arr = ds.pixel_array
+    if arr.ndim == 2:
+        frames = [arr]
+    elif arr.ndim == 3:
+        if arr.shape[-1] in (3, 4):
+            frames = [arr[..., :3]]
+        else:
+            frames = [arr[i] for i in range(arr.shape[0])]
+    elif arr.ndim == 4:
+        frames = [arr[i, ..., :3] for i in range(arr.shape[0])]
+    else:
+        frames = []
+    return frames
+
+def save_pngs(frames, base, out_dir):
+    os.makedirs(out_dir, exist_ok=True)
+    written = []
+    for i, f in enumerate(frames, 1):
+        if f.ndim == 3:
+            f = np.mean(f, axis=-1)
+        out_name = f"{{base}}_frame_{{i:03d}}.png"
+        out_path = os.path.join(out_dir, out_name)
+        plt.imsave(out_path, f, cmap="gray", vmin=f.min(), vmax=f.max())
+        written.append(out_path)
+    return written
+
+def crop_pngs(files, out_dir, top=65, left=66, right=150):
+    os.makedirs(out_dir, exist_ok=True)
+    written = []
+    for fp in files:
+        img = Image.open(fp)
+        w, h = img.size
+        cropped = img.crop((left, top, w - right, h))
+        out_path = os.path.join(out_dir, os.path.basename(fp))
+        cropped.save(out_path)
+        written.append(out_path)
+    return written
+
+def process_single_dcm(dcm_path, out_raw="Processed_PNGs", out_cropped="Processed_PNGs_cropped"):
+    ds = pydicom.dcmread(dcm_path)
+    frames = load_frames(ds)
+    if not frames:
+        return [], []
+    
+    base = os.path.splitext(os.path.basename(dcm_path))[0]
+    raw_files = save_pngs(frames, base, out_raw)
+    cropped_files = crop_pngs(raw_files, out_cropped, top=65, left=66, right=150)
+    return raw_files, cropped_files
+
+# Process the DICOM file
+dcm_path = "{dcm_path}"
+out_raw = "Processed_PNGs"
+out_cropped = "Processed_PNGs_cropped"
+
+try:
+    raw_files, cropped_files = process_single_dcm(dcm_path, out_raw, out_cropped)
+    print(f"SUCCESS:{{len(raw_files)}}:{{len(cropped_files)}}")
+except Exception as e:
+    print(f"ERROR:{{str(e)}}")
+'''
+        
+        # Write the script to a temporary file
+        script_path = os.path.join(os.path.dirname(__file__), "temp_process.py")
+        with open(script_path, 'w') as f:
+            f.write(script_content)
+        
+        # Run the script with Python 3.11
+        result = subprocess.run(['python3.11', script_path], 
+                              capture_output=True, text=True, cwd=os.path.dirname(__file__))
+        
+        # Clean up the temporary script
+        os.remove(script_path)
+        
+        if result.returncode == 0:
+            output = result.stdout.strip()
+            if output.startswith("SUCCESS:"):
+                parts = output.split(":")
+                raw_count = int(parts[1])
+                cropped_count = int(parts[2])
+                return raw_count, cropped_count
+            else:
+                raise Exception(f"Processing failed: {output}")
+        else:
+            raise Exception(f"Python 3.11 execution failed: {result.stderr}")
+            
+    except Exception as e:
+        raise Exception(f"Failed to process DICOM with Python 3.11: {str(e)}")
 
 def cleanup_old_files():
     """Delete old processed PNG folders and upload files"""
@@ -68,21 +167,23 @@ async def upload_dcm(file: UploadFile = File(...)):
     with open(dest_path, "wb") as out:
         shutil.copyfileobj(file.file, out)
 
-    # Clear any previous cancellation before starting
-    cancel_event.clear()
-    # Run CPU-bound processing in a background thread so reset can run concurrently
-    raw_files, cropped_files = await asyncio.to_thread(process_single_dcm, dest_path)
-    return JSONResponse({
-        "raw_files": raw_files,
-        "cropped_files": cropped_files
-    })
+    # Process using Python 3.11 with correct package versions
+    try:
+        raw_count, cropped_count = await asyncio.to_thread(process_dcm_with_python311, dest_path)
+        return JSONResponse({
+            "message": "DICOM processed successfully with Python 3.11",
+            "raw_files_count": raw_count,
+            "cropped_files_count": cropped_count,
+            "raw_files": [f"Processed_PNGs/{file}" for file in os.listdir("Processed_PNGs") if file.endswith('.png')],
+            "cropped_files": [f"Processed_PNGs_cropped/{file}" for file in os.listdir("Processed_PNGs_cropped") if file.endswith('.png')]
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process DICOM: {str(e)}")
 
 @app.post("/reset")
 async def reset():
     """Reset endpoint: clean up all folders and stop processing"""
     try:
-        # Signal cancellation to any in-flight processing
-        cancel_event.set()
         cleanup_old_files()
         return JSONResponse({
             "message": "Reset completed successfully",
@@ -91,50 +192,5 @@ async def reset():
     except Exception as e:
         return JSONResponse({
             "message": f"Reset failed: {str(e)}",
-            "status": "error"
-        }, status_code=500)
-
-@app.post("/process_image")
-async def process_image(data: dict):
-    """
-    Receive processed images from Jupyter notebook
-    Expected payload: {"image": "base64_encoded_image", "filename": "image_name.png"}
-    """
-    try:
-        # Extract data from request
-        image_base64 = data.get("image")
-        filename = data.get("filename", "processed_image.png")
-        
-        if not image_base64:
-            raise HTTPException(status_code=400, detail="No image data provided")
-        
-        # Decode base64 image
-        image_data = base64.b64decode(image_base64)
-        
-        # Create a directory for processed images if it doesn't exist
-        processed_dir = os.path.join(os.path.dirname(__file__), "processed_images")
-        os.makedirs(processed_dir, exist_ok=True)
-        
-        # Save the image
-        image_path = os.path.join(processed_dir, filename)
-        with open(image_path, "wb") as f:
-            f.write(image_data)
-        
-        # You can add your AI processing logic here
-        # For now, we'll just return success with image info
-        image = Image.open(BytesIO(image_data))
-        
-        return JSONResponse({
-            "message": "Image processed successfully",
-            "filename": filename,
-            "image_path": image_path,
-            "image_size": image.size,
-            "image_mode": image.mode,
-            "status": "success"
-        })
-        
-    except Exception as e:
-        return JSONResponse({
-            "message": f"Failed to process image: {str(e)}",
             "status": "error"
         }, status_code=500)
