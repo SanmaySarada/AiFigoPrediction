@@ -24,13 +24,22 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 def cleanup_old_files():
     """Delete old processed PNG folders and upload files"""
-    # Clean up processed PNG folders - look in parent directory where process_dcm.py creates them
+    # Clean up processed PNG folders - look in both backend and project root directories
     png_dirs = ["Processed_PNGs", "Processed_PNGs_cropped"]
+    
+    # Check in backend directory (current behavior)
     for dir_name in png_dirs:
-        dir_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), dir_name)
-        if os.path.exists(dir_path):
-            shutil.rmtree(dir_path)
-            print(f"Deleted old directory: {dir_path}")
+        backend_dir_path = os.path.join(os.path.dirname(__file__), dir_name)
+        if os.path.exists(backend_dir_path):
+            shutil.rmtree(backend_dir_path)
+            print(f"Deleted old directory: {backend_dir_path}")
+    
+    # Check in project root directory (where they should be)
+    for dir_name in png_dirs:
+        root_dir_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), dir_name)
+        if os.path.exists(root_dir_path):
+            shutil.rmtree(root_dir_path)
+            print(f"Deleted old directory: {root_dir_path}")
     
     # Clean up uploads folder
     if os.path.exists(UPLOAD_DIR):
