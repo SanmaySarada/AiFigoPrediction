@@ -1,9 +1,8 @@
 fastapi==0.115.4
 uvicorn[standard]==0.30.6
-pydicom==2.4.4
+pydicom==3.0.1
 numpy==1.26.4
 matplotlib==3.10.0
-Pillow==10.4.0
+Pillow==10.1.0
 python-multipart==0.0.20
-requests==2.31.0
 
