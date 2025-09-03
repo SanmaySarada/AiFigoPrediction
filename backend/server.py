@@ -6,6 +6,9 @@ import shutil
 import sys
 import os
 import asyncio
+import base64
+from io import BytesIO
+from PIL import Image
 sys.path.append(os.path.dirname(__file__))
 from process_dcm import process_single_dcm, cancel_event
 
@@ -88,5 +91,50 @@ async def reset():
     except Exception as e:
         return JSONResponse({
             "message": f"Reset failed: {str(e)}",
+            "status": "error"
+        }, status_code=500)
+
+@app.post("/process_image")
+async def process_image(data: dict):
+    """
+    Receive processed images from Jupyter notebook
+    Expected payload: {"image": "base64_encoded_image", "filename": "image_name.png"}
+    """
+    try:
+        # Extract data from request
+        image_base64 = data.get("image")
+        filename = data.get("filename", "processed_image.png")
+        
+        if not image_base64:
+            raise HTTPException(status_code=400, detail="No image data provided")
+        
+        # Decode base64 image
+        image_data = base64.b64decode(image_base64)
+        
+        # Create a directory for processed images if it doesn't exist
+        processed_dir = os.path.join(os.path.dirname(__file__), "processed_images")
+        os.makedirs(processed_dir, exist_ok=True)
+        
+        # Save the image
+        image_path = os.path.join(processed_dir, filename)
+        with open(image_path, "wb") as f:
+            f.write(image_data)
+        
+        # You can add your AI processing logic here
+        # For now, we'll just return success with image info
+        image = Image.open(BytesIO(image_data))
+        
+        return JSONResponse({
+            "message": "Image processed successfully",
+            "filename": filename,
+            "image_path": image_path,
+            "image_size": image.size,
+            "image_mode": image.mode,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return JSONResponse({
+            "message": f"Failed to process image: {str(e)}",
             "status": "error"
         }, status_code=500)
