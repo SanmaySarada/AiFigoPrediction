@@ -1,7 +1,5 @@
 import os, sys, argparse, numpy as np, pydicom
 from threading import Event
-import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend for consistent output
 from matplotlib import pyplot as plt
 from PIL import Image
 """
@@ -11,13 +9,6 @@ Cooperative cancellation support:
 """
 cancel_event: Event = Event()
 
-# Configure matplotlib for consistent output
-def configure_matplotlib():
-    """Ensure matplotlib is configured for consistent PNG output"""
-    plt.rcParams['figure.dpi'] = 100
-    plt.rcParams['savefig.dpi'] = 100
-    plt.rcParams['savefig.bbox'] = 'tight'
-    plt.rcParams['savefig.pad_inches'] = 0
 
 # ---- load frames from a DICOM (exact match to your reference) ----
 def load_frames(ds):
@@ -38,13 +29,7 @@ def load_frames(ds):
     else:
         frames = []
 
-    # convert any RGB frame to grayscale the same way (mean over channels)
-    out = []
-    for f in frames:
-        if f.ndim == 3:
-            f = np.mean(f, axis=-1)
-        out.append(f)
-    return out
+    return frames
 
 # ---- save frames as PNGs (exact match to your reference) ----
 def save_pngs(frames, base, out_dir):
@@ -53,12 +38,13 @@ def save_pngs(frames, base, out_dir):
     for i, f in enumerate(frames, 1):
         if cancel_event.is_set():
             break
+            
+        if f.ndim == 3:  # RGB to grayscale
+            f = np.mean(f, axis=-1)
 
         out_name = f"{base}_frame_{i:03d}.png"
         out_path = os.path.join(out_dir, out_name)
-        # Set explicit DPI and figure settings for consistent output
-        plt.imsave(out_path, f, cmap="gray", vmin=f.min(), vmax=f.max(), 
-                  dpi=100, format='png')
+        plt.imsave(out_path, f, cmap="gray", vmin=f.min(), vmax=f.max())
         written.append(out_path)
     return written
 
@@ -95,9 +81,6 @@ def process_single_dcm(dcm_path, out_raw="Processed_PNGs", out_cropped="Processe
     return raw_files, cropped_files
 
 if __name__ == "__main__":
-    # Configure matplotlib for consistent output
-    configure_matplotlib()
-    
     ap = argparse.ArgumentParser()
     ap.add_argument("--dcm", required=True, help="path to a single .dcm file")
     ap.add_argument("--out-raw", default="Processed_PNGs")
