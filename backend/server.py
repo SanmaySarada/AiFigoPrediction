@@ -7,6 +7,10 @@ import sys
 import os
 import asyncio
 import subprocess
+import pickle
+import numpy as np
+from PIL import Image
+import tensorflow as tf
 sys.path.append(os.path.dirname(__file__))
 
 app = FastAPI(title="Figo AI Backend")
@@ -19,8 +23,162 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+async def startup_event():
+    """Load models on startup"""
+    load_models()
+
 UPLOAD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "uploads"))
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# Load the CNN model and ensemble model
+MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
+CNN_MODEL_PATH = os.path.join(MODEL_DIR, "best_model_copy.h5")
+ENSEMBLE_MODEL_PATH = os.path.join(MODEL_DIR, "ensemble.pkl")
+
+# Global variables to store loaded models
+cnn_model = None
+ensemble_model = None
+
+def load_models():
+    """Load the CNN and ensemble models"""
+    global cnn_model, ensemble_model
+    try:
+        if os.path.exists(CNN_MODEL_PATH):
+            # Try loading with custom_objects to handle compatibility issues
+            cnn_model = tf.keras.models.load_model(CNN_MODEL_PATH, compile=False)
+            print(f"CNN model loaded successfully from {CNN_MODEL_PATH}")
+            print(f"Model input shape: {cnn_model.input_shape}")
+            print(f"Model output shape: {cnn_model.output_shape}")
+        else:
+            print(f"CNN model file not found at {CNN_MODEL_PATH}")
+        
+        if os.path.exists(ENSEMBLE_MODEL_PATH):
+            with open(ENSEMBLE_MODEL_PATH, 'rb') as f:
+                ensemble_model = pickle.load(f)
+            print(f"Ensemble model loaded successfully from {ENSEMBLE_MODEL_PATH}")
+            print(f"Available models in ensemble: {list(ensemble_model.keys())}")
+        else:
+            print(f"Ensemble model file not found at {ENSEMBLE_MODEL_PATH}")
+    except Exception as e:
+        print(f"Error loading models: {e}")
+        print("Will use fallback prediction logic")
+
+def predict_cnn_values(cropped_image_paths):
+    """Use CNN model to predict cnn_pred values from all cropped images"""
+    global cnn_model
+    
+    print(f"CNN model loaded: {cnn_model is not None}")
+    print(f"Number of cropped images: {len(cropped_image_paths) if cropped_image_paths else 0}")
+    
+    if not cnn_model:
+        print("CNN model failed to load - returning error")
+        return {"error": "CNN model failed to load. Please check model compatibility."}
+    
+    if not cropped_image_paths or len(cropped_image_paths) == 0:
+        return {"error": "No cropped images available for CNN prediction."}
+    
+    try:
+        predictions = []
+        individual_predictions = []  # Store individual predictions for debugging
+        
+        # Process each cropped image
+        for i, img_path in enumerate(cropped_image_paths):
+            if not os.path.exists(img_path):
+                print(f"Image {i+1} not found: {img_path}")
+                continue
+                
+            print(f"Processing image {i+1}: {os.path.basename(img_path)}")
+            
+            # Load and preprocess image
+            img = Image.open(img_path).convert('RGB')
+            img = img.resize((256, 256))  # Resize to match model input
+            img_array = np.array(img) / 255.0  # Normalize
+            img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
+            
+            # Get CNN prediction
+            prediction = cnn_model.predict(img_array, verbose=0)
+            print(f"Raw prediction for image {i+1}: {prediction}")
+            
+            # Convert to float (keep continuous values for averaging)
+            if len(prediction[0]) > 1:
+                pred_value = float(np.argmax(prediction[0]))
+            else:
+                pred_value = float(prediction[0][0])
+            
+            predictions.append(pred_value)
+            individual_predictions.append({
+                "image": os.path.basename(img_path),
+                "prediction": pred_value,
+                "raw_prediction": prediction[0].tolist()
+            })
+            print(f"Image {i+1} ({os.path.basename(img_path)}) prediction: {pred_value}")
+        
+        if not predictions:
+            return {"error": "No valid predictions generated from images."}
+        
+        # Average all predictions
+        avg_prediction = float(np.mean(predictions))
+        print(f"Individual predictions: {predictions}")
+        print(f"Average CNN prediction from {len(predictions)} images: {avg_prediction}")
+        
+        return {
+            "cnn_pred": avg_prediction,
+            "individual_predictions": individual_predictions,
+            "total_images_processed": len(predictions)
+        }
+        
+    except Exception as e:
+        print(f"Error in CNN prediction: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"error": f"CNN prediction failed: {str(e)}"}
+
+def to_bin(x):
+    """Helper to coerce previa to 0/1"""
+    if isinstance(x, str):
+        return 1 if x.strip().lower().startswith("y") else 0
+    return int(x)
+
+def predict_pas(number_prior_cs, previa, cnn_prob, threshold=0.5):
+    """Single-patient prediction using ensemble model"""
+    global ensemble_model
+    
+    if not ensemble_model:
+        return {"error": "Ensemble model not loaded"}
+    
+    try:
+        # Extract individual models from the bundle
+        log_model = ensemble_model["log_model"]
+        rf_model = ensemble_model["rf_model"]
+        gb_model = ensemble_model["gb_model"]
+        
+        # Prepare input array
+        x = np.array([[float(number_prior_cs), float(to_bin(previa)), float(cnn_prob)]], dtype=float)
+        
+        # Get predictions from all three models
+        log_prob = log_model.predict_proba(x)[:,1]
+        rf_prob = rf_model.predict_proba(x)[:,1]
+        gb_prob = gb_model.predict_proba(x)[:,1]
+        
+        # Average the probabilities
+        p = np.mean([log_prob, rf_prob, gb_prob], axis=0)[0]
+        
+        return {
+            "prob": float(p),
+            "pred": int(p >= threshold),
+            "individual_predictions": {
+                "logistic_regression": float(log_prob[0]),
+                "random_forest": float(rf_prob[0]),
+                "gradient_boosting": float(gb_prob[0])
+            }
+        }
+        
+    except Exception as e:
+        print(f"Error in ensemble prediction: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"error": f"Ensemble prediction failed: {str(e)}"}
 
 def process_dcm_with_python311(dcm_path):
     """Process DICOM file using Python 3.11 with correct package versions"""
@@ -170,6 +328,7 @@ async def upload_dcm(file: UploadFile = File(...)):
     # Process using Python 3.11 with correct package versions
     try:
         raw_count, cropped_count = await asyncio.to_thread(process_dcm_with_python311, dest_path)
+        
         return JSONResponse({
             "message": "DICOM processed successfully with Python 3.11",
             "raw_files_count": raw_count,
@@ -179,6 +338,54 @@ async def upload_dcm(file: UploadFile = File(...)):
         })
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to process DICOM: {str(e)}")
+
+@app.post("/generate-cnn-prediction")
+async def generate_cnn_prediction(request: dict):
+    """Generate CNN prediction from cropped images"""
+    try:
+        cropped_files = request.get("cropped_files", [])
+        if not cropped_files:
+            return JSONResponse({"error": "No cropped files provided"}, status_code=400)
+        
+        # Get full paths to cropped files
+        cropped_files_dir = "Processed_PNGs_cropped"
+        full_paths = []
+        for file in cropped_files:
+            if file.startswith("Processed_PNGs_cropped/"):
+                full_path = file
+            else:
+                full_path = os.path.join(cropped_files_dir, file)
+            if os.path.exists(full_path):
+                full_paths.append(full_path)
+        
+        if not full_paths:
+            return JSONResponse({"error": "No valid cropped files found"}, status_code=400)
+        
+        # Generate CNN predictions
+        result = predict_cnn_values(full_paths)
+        return JSONResponse(result)
+        
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to generate CNN prediction: {str(e)}"}, status_code=500)
+
+@app.post("/generate-ensemble-prediction")
+async def generate_ensemble_prediction(request: dict):
+    """Generate ensemble prediction from the three input values"""
+    try:
+        number_prior_cs = request.get("number_prior_cs")
+        previa = request.get("previa")
+        cnn_prob = request.get("cnn_prob")
+        threshold = request.get("threshold", 0.5)
+        
+        if number_prior_cs is None or previa is None or cnn_prob is None:
+            return JSONResponse({"error": "Missing required parameters: number_prior_cs, previa, cnn_prob"}, status_code=400)
+        
+        # Generate ensemble prediction
+        result = predict_pas(number_prior_cs, previa, cnn_prob, threshold)
+        return JSONResponse(result)
+        
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to generate ensemble prediction: {str(e)}"}, status_code=500)
 
 @app.post("/reset")
 async def reset():
@@ -194,3 +401,7 @@ async def reset():
             "message": f"Reset failed: {str(e)}",
             "status": "error"
         }, status_code=500)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

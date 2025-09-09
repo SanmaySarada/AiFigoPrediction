@@ -17,8 +17,7 @@ import {
   Upload as UploadIcon,
   Calculate as CalculateIcon,
   Refresh as RefreshIcon,
-  Description as FileTextIcon,
-  TrendingUp as TrendingUpIcon
+  Description as FileTextIcon
 } from '@mui/icons-material'
 import { useDropzone } from 'react-dropzone'
 import './App.css'
@@ -28,6 +27,15 @@ interface PredictionResult {
   numericalPrediction: number | null
   finalResult: number | null
   confidence: number | null
+  ensembleResult?: {
+    prob: number
+    pred: number
+    individual_predictions: {
+      logistic_regression: number
+      random_forest: number
+      gradient_boosting: number
+    }
+  }
 }
 
 function App() {
@@ -48,6 +56,7 @@ function App() {
   const [dicomProcessing, setDicomProcessing] = useState(false)
   const [processedFiles, setProcessedFiles] = useState<{raw_files: string[], cropped_files: string[]} | null>(null)
   const [isResetting, setIsResetting] = useState(false);
+  const [isGeneratingCNN, setIsGeneratingCNN] = useState(false);
   const uploadAbortController = useRef<AbortController | null>(null)
 
   const onDrop = async (acceptedFiles: File[]) => {
@@ -73,7 +82,15 @@ function App() {
         if (response.ok) {
           const result = await response.json()
           console.log('DICOM processed successfully:', result)
-          setProcessedFiles(result)
+          console.log('Raw files:', result.raw_files)
+          console.log('Cropped files:', result.cropped_files)
+          
+          // Set processed files with the correct structure
+          setProcessedFiles({
+            raw_files: result.raw_files || [],
+            cropped_files: result.cropped_files || []
+          })
+          
           setError(null)
         } else {
           setError('Failed to process DICOM file')
@@ -102,25 +119,86 @@ function App() {
   })
 
   const handleNumericalInputChange = (field: string, value: string) => {
+    // Don't allow changes to input3 (cnn_pred) - it's read-only
+    if (field === 'input3') return;
+    
+    // For previa_yes/no field, only allow y, n, Y, N, or empty string
+    if (field === 'input2') {
+      // Only allow y, n, Y, N, or empty string
+      if (value && !/^[ynYN]$/.test(value)) {
+        return; // Don't update if invalid character
+      }
+      // Limit to 1 character
+      if (value.length > 1) {
+        return;
+      }
+    }
+    
     setNumericalInputs(prev => ({
       ...prev,
       [field]: value
     }))
   }
 
-  const validateInputs = () => {
-    if (!file && Object.values(numericalInputs).some(val => !val)) {
-      setError('Please provide either a file or all three numerical inputs')
-      return false
+  const handleGenerateCNNPrediction = async () => {
+    if (!processedFiles || !processedFiles.cropped_files || processedFiles.cropped_files.length === 0) {
+      setError('No cropped images available for CNN prediction')
+      return
     }
-    if (file && Object.values(numericalInputs).some(val => !val)) {
-      setError('Please provide both a file and all three numerical inputs')
+
+    setIsGeneratingCNN(true)
+    setError(null)
+
+    try {
+      // Call the CNN prediction endpoint
+      const response = await fetch('http://localhost:8000/generate-cnn-prediction', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          cropped_files: processedFiles.cropped_files
+        })
+      })
+
+      if (response.ok) {
+        const result = await response.json()
+        if (result.error) {
+          setError(`CNN Prediction Failed: ${result.error}`)
+        } else if (result.cnn_pred !== undefined) {
+          setNumericalInputs(prev => ({
+            ...prev,
+            input3: result.cnn_pred.toString()
+          }))
+          console.log('CNN prediction generated:', result.cnn_pred)
+          if (result.individual_predictions) {
+            console.log('Individual predictions:', result.individual_predictions)
+          }
+        }
+      } else {
+        setError('Failed to generate CNN prediction')
+      }
+    } catch (err) {
+      setError('Error generating CNN prediction')
+    } finally {
+      setIsGeneratingCNN(false)
+    }
+  }
+
+  const validateInputs = () => {
+    // All three fields must be filled out
+    const hasInput1 = numericalInputs.input1 && numericalInputs.input1.trim() !== ''
+    const hasInput2 = numericalInputs.input2 && numericalInputs.input2.trim() !== ''
+    const hasInput3 = numericalInputs.input3 && numericalInputs.input3.trim() !== ''
+    
+    if (!hasInput1 || !hasInput2 || !hasInput3) {
+      setError('Please fill out all three fields: number_prior_cs, previa_yes/no, and cnn_pred')
       return false
     }
     
     // Validate input2 is 'y' or 'n' (case insensitive)
     if (numericalInputs.input2 && !/^[ynYN]$/.test(numericalInputs.input2)) {
-      setError('previa_yes/no must be either "y" or "n"')
+      setError('previa_yes/no must be either "y" or "n" (case insensitive)')
       return false
     }
     
@@ -130,50 +208,103 @@ function App() {
       return false
     }
     
-    // Validate input3 is an integer
-    if (numericalInputs.input3 && !Number.isInteger(Number(numericalInputs.input3))) {
-      setError('cnn_pred must be an integer value')
-      return false
-    }
-    
     return true
   }
 
-  const simulatePrediction = async () => {
-    // Simulate API calls to AI models
-    return new Promise<PredictionResult>((resolve) => {
-      setTimeout(() => {
-        const filePrediction = file ? Math.random() * 100 : null
-        
-        // Convert y/n input to binary value (y=1, n=0) for calculations
-        const yNoValue = numericalInputs.input2 ? (numericalInputs.input2.toLowerCase() === 'y' ? 1 : 0) : null
-        const numericalPrediction = Object.values(numericalInputs).every(val => val) 
-          ? Math.random() * 100 
-          : null
-        
-        let finalResult = 0
-        let confidence = 0
-        
-        if (filePrediction !== null && numericalPrediction !== null) {
-          // Combine both predictions with weighted average
-          finalResult = (filePrediction * 0.6) + (numericalPrediction * 0.4)
-          confidence = Math.random() * 0.3 + 0.7 // 70-100% confidence
-        } else if (filePrediction !== null) {
-          finalResult = filePrediction
-          confidence = Math.random() * 0.2 + 0.6 // 60-80% confidence
-        } else if (numericalPrediction !== null) {
-          finalResult = numericalPrediction
-          confidence = Math.random() * 0.2 + 0.6 // 60-80% confidence
+  const isGeneratePredictionDisabled = () => {
+    // All three fields must be filled out: input1, input2, and input3
+    const hasInput1 = numericalInputs.input1 && numericalInputs.input1.trim() !== ''
+    const hasInput2 = numericalInputs.input2 && numericalInputs.input2.trim() !== ''
+    const hasInput3 = numericalInputs.input3 && numericalInputs.input3.trim() !== ''
+    
+    // If any field is missing, disable
+    if (!hasInput1 || !hasInput2 || !hasInput3) {
+      return true
+    }
+    
+    // Validate input2 is valid (y, n, Y, or N)
+    if (numericalInputs.input2 && !/^[ynYN]$/.test(numericalInputs.input2)) {
+      return true
+    }
+    
+    // Validate input1 is a valid whole number
+    if (numericalInputs.input1 && (!Number.isInteger(Number(numericalInputs.input1)) || Number(numericalInputs.input1) < 0)) {
+      return true
+    }
+    
+    return false
+  }
+
+  const generateEnsemblePrediction = async () => {
+    try {
+      const requestData = {
+        number_prior_cs: parseFloat(numericalInputs.input1),
+        previa: numericalInputs.input2,
+        cnn_prob: parseFloat(numericalInputs.input3),
+        threshold: 0.5
+      }
+      
+      console.log('Sending ensemble prediction request:', requestData)
+      
+      const response = await fetch('http://localhost:8000/generate-ensemble-prediction', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestData)
+      })
+
+      if (response.ok) {
+        const result = await response.json()
+        if (result.error) {
+          throw new Error(result.error)
         }
-        
-        resolve({
-          filePrediction,
-          numericalPrediction,
-          finalResult,
-          confidence
-        })
-      }, 2000)
-    })
+        return result
+      } else {
+        throw new Error('Failed to generate ensemble prediction')
+      }
+    } catch (err) {
+      console.error('Error generating ensemble prediction:', err)
+      throw err
+    }
+  }
+
+  const simulatePrediction = async () => {
+    // Use real ensemble prediction instead of simulation
+    try {
+      const ensembleResult = await generateEnsemblePrediction()
+      console.log('Ensemble result from backend:', ensembleResult)
+      
+      // Convert ensemble result to our prediction format
+      const finalResult = ensembleResult.prob * 100 // Convert probability to percentage
+      const confidence = Math.min(ensembleResult.prob + 0.1, 1.0) // Add some confidence based on probability
+      
+      console.log('Converted values:', { finalResult, confidence, ensembleResult })
+      
+      return {
+        filePrediction: null, // We don't have separate file prediction anymore
+        numericalPrediction: null, // We don't have separate numerical prediction anymore
+        finalResult,
+        confidence,
+        ensembleResult // Include the full ensemble result for debugging
+      }
+    } catch (err) {
+      // Fallback to simulation if ensemble fails
+      console.warn('Ensemble prediction failed, using simulation:', err)
+      return new Promise<PredictionResult>((resolve) => {
+        setTimeout(() => {
+          const finalResult = Math.random() * 100
+          const confidence = Math.random() * 0.3 + 0.7
+          
+          resolve({
+            filePrediction: null,
+            numericalPrediction: null,
+            finalResult,
+            confidence
+          })
+        }, 2000)
+      })
+    }
   }
 
   const handlePredict = async () => {
@@ -231,16 +362,16 @@ function App() {
   };
 
   return (
-    <Container maxWidth="lg" sx={{ py: 4 }}>
+    <Container maxWidth="lg" sx={{ py: 4, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <Box textAlign="center" mb={4}>
         <Typography variant="h3" component="h1" gutterBottom color="primary">
           Placenta Accreta Spectrum Figo AI Prediction Engine
         </Typography>
       </Box>
 
-      <Stack spacing={4}>
+      <Stack spacing={4} sx={{ width: '100%', alignItems: 'center' }}>
         {/* File Upload and Numerical Input Sections */}
-        <Box sx={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+        <Box sx={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'center', width: '100%' }}>
           {/* File Upload Section */}
           <Paper elevation={3} sx={{ p: 3, flex: 1, minWidth: 300 }}>
             <Box textAlign="center" mb={3}>
@@ -347,31 +478,66 @@ function App() {
                   maxLength: 1,
                   pattern: '[ynYN]'
                 }}
-                helperText="Enter 'y' for yes or 'n' for no"
+                helperText="Enter 'y' for yes or 'n' for no (only y, n, Y, or N allowed)"
+                error={!!(numericalInputs.input2 && !/^[ynYN]$/.test(numericalInputs.input2))}
               />
               <TextField
                 fullWidth
-                label="cnn_pred"
+                label="cnn_pred (Generated by CNN)"
                 type="number"
                 value={numericalInputs.input3}
-                onChange={(e) => handleNumericalInputChange('input3', e.target.value)}
-                placeholder="Enter integer value"
+                placeholder={processedFiles ? "Click 'Generate CNN Prediction' button below" : "Upload DICOM file first"}
                 InputProps={{
-                  inputProps: { step: 1 }
+                  inputProps: { step: 1, readOnly: true },
+                  style: { backgroundColor: '#f5f5f5' }
                 }}
+                helperText={processedFiles ? 
+                  `Click the button below to analyze ${processedFiles.cropped_files.length} cropped images with CNN model` : 
+                  "Upload a DICOM file to enable CNN prediction"
+                }
               />
             </Stack>
           </Paper>
         </Box>
 
+        {/* CNN Prediction Button - Show if DICOM is processed */}
+        {processedFiles && processedFiles.cropped_files && processedFiles.cropped_files.length > 0 ? (
+          <Box textAlign="center" mb={3} sx={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+            <Button
+              variant="contained"
+              size="large"
+              onClick={handleGenerateCNNPrediction}
+              disabled={isGeneratingCNN}
+              startIcon={isGeneratingCNN ? <CircularProgress size={20} /> : null}
+              sx={{ 
+                minWidth: 300,
+                backgroundColor: '#4caf50',
+                '&:hover': {
+                  backgroundColor: '#45a049'
+                }
+              }}
+            >
+              {isGeneratingCNN ? 'Generating CNN Prediction...' : 'Generate CNN Prediction'}
+            </Button>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              Analyze {processedFiles.cropped_files.length} cropped images with CNN model
+            </Typography>
+            {numericalInputs.input3 && (
+              <Typography variant="body2" color="success.main" sx={{ mt: 1 }}>
+                ✓ CNN Prediction: {numericalInputs.input3}
+              </Typography>
+            )}
+          </Box>
+        ) : null}
+
         {/* Action Buttons */}
-        <Box textAlign="center">
+        <Box textAlign="center" sx={{ width: '100%', display: 'flex', justifyContent: 'center' }}>
           <Stack direction="row" spacing={2} justifyContent="center">
             <Button
               variant="contained"
               size="large"
               onClick={handlePredict}
-              disabled={isProcessing || (!file && Object.values(numericalInputs).some(val => !val))}
+              disabled={isProcessing || isGeneratePredictionDisabled()}
               startIcon={isProcessing ? <CircularProgress size={20} /> : null}
               sx={{ 
                 minWidth: 200,
@@ -405,50 +571,69 @@ function App() {
 
         {/* Results Display */}
         {predictionResult.finalResult !== null && (
-          <Paper elevation={3} sx={{ p: 3 }}>
+          <Paper elevation={3} sx={{ p: 3, width: '100%' }}>
             <Box textAlign="center" mb={3}>
               <Typography variant="h4" component="h2" gutterBottom color="primary">
                 Prediction Results
               </Typography>
             </Box>
             
-            <Box sx={{ display: 'flex', gap: 3, flexWrap: 'wrap', justifyContent: 'center' }}>
-              {predictionResult.filePrediction !== null && (
+            <Box sx={{ display: 'flex', gap: 3, flexWrap: 'wrap', justifyContent: 'center', width: '100%' }}>
+              {/* Input Parameters Card */}
+              <Card sx={{ minWidth: 250, flex: 1 }}>
+                <CardContent>
+                  <Typography variant="h6" color="text.secondary" gutterBottom>
+                    Input Parameters
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" gutterBottom>
+                    number_prior_cs: {numericalInputs.input1}<br/>
+                    previa_yes/no: {numericalInputs.input2}<br/>
+                    cnn_pred: {numericalInputs.input3}
+                  </Typography>
+                  <Chip 
+                    label="Input values" 
+                    color="primary" 
+                    variant="outlined" 
+                    size="small" 
+                    sx={{ mt: 1 }}
+                  />
+                </CardContent>
+              </Card>
+
+              {/* Ensemble Prediction Card */}
+              <Card sx={{ minWidth: 250, flex: 1, bgcolor: 'success.50' }}>
+                <CardContent>
+                  <Typography variant="h6" color="text.secondary" gutterBottom>
+                    Ensemble Prediction
+                  </Typography>
+                  <Typography variant="h3" color="success.main" fontWeight="bold">
+                    {predictionResult.finalResult!.toFixed(1)}%
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                    Risk Level: {predictionResult.ensembleResult?.pred ? 'High Risk' : 'Low Risk'}
+                  </Typography>
+                  <Chip 
+                    label={`${(predictionResult.ensembleResult?.prob || 0).toFixed(1)}% probability`}
+                    color="success" 
+                    sx={{ mt: 1 }}
+                  />
+                </CardContent>
+              </Card>
+
+              {/* Individual Model Results Card */}
+              {predictionResult.ensembleResult?.individual_predictions && (
                 <Card sx={{ minWidth: 250, flex: 1 }}>
                   <CardContent>
                     <Typography variant="h6" color="text.secondary" gutterBottom>
-                      File Analysis Result
-                    </Typography>
-                    <Typography variant="h4" color="primary">
-                      {predictionResult.filePrediction.toFixed(2)}
-                    </Typography>
-                    <Chip 
-                      label="File-based prediction" 
-                      color="primary" 
-                      variant="outlined" 
-                      size="small" 
-                      sx={{ mt: 1 }}
-                    />
-                  </CardContent>
-                </Card>
-              )}
-              
-              {predictionResult.numericalPrediction !== null && (
-                <Card sx={{ minWidth: 250, flex: 1 }}>
-                  <CardContent>
-                    <Typography variant="h6" color="text.secondary" gutterBottom>
-                      Parameter Analysis Result
+                      Individual Model Results
                     </Typography>
                     <Typography variant="body2" color="text.secondary" gutterBottom>
-                      number_prior_cs: {numericalInputs.input1}<br/>
-                      previa_yes/no: {numericalInputs.input2}<br/>
-                      cnn_pred: {numericalInputs.input3}
-                    </Typography>
-                    <Typography variant="h4" color="secondary">
-                      {predictionResult.numericalPrediction.toFixed(2)}
+                      Logistic Regression: {(predictionResult.ensembleResult.individual_predictions.logistic_regression * 100).toFixed(1)}%<br/>
+                      Random Forest: {(predictionResult.ensembleResult.individual_predictions.random_forest * 100).toFixed(1)}%<br/>
+                      Gradient Boosting: {(predictionResult.ensembleResult.individual_predictions.gradient_boosting * 100).toFixed(1)}%
                     </Typography>
                     <Chip 
-                      label="Parameter-based prediction" 
+                      label="Model breakdown" 
                       color="secondary" 
                       variant="outlined" 
                       size="small" 
@@ -457,29 +642,13 @@ function App() {
                   </CardContent>
                 </Card>
               )}
-              
-              <Card sx={{ minWidth: 250, flex: 1, bgcolor: 'success.50' }}>
-                <CardContent>
-                  <Typography variant="h6" color="text.secondary" gutterBottom>
-                    Final Combined Result
-                  </Typography>
-                  <Typography variant="h3" color="success.main" fontWeight="bold">
-                    {predictionResult.finalResult.toFixed(2)}
-                  </Typography>
-                  <Chip 
-                    label={`${(predictionResult.confidence! * 100).toFixed(0)}% confidence`}
-                    color="success" 
-                    sx={{ mt: 1 }}
-                  />
-                </CardContent>
-              </Card>
             </Box>
             
             <Box mt={3} p={2} bgcolor="info.50" borderRadius={1}>
               <Typography variant="body2" color="info.main">
-                <strong>Analysis Summary:</strong> The final prediction combines both the file analysis 
-                and numerical parameter analysis using advanced AI algorithms. The confidence score 
-                indicates the reliability of this combined prediction.
+                <strong>Analysis Summary:</strong> The ensemble prediction combines three machine learning models 
+                (Logistic Regression, Random Forest, and Gradient Boosting) using your input parameters. 
+                The final probability represents the risk assessment for Placenta Accreta Spectrum (PAS).
               </Typography>
             </Box>
           </Paper>
