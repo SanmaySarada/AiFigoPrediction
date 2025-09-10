@@ -29,3 +29,10 @@ node_modules/
 # Temporary files
 *.tmp
 *.temp
+
+# PATIENT DATA - NEVER COMMIT
+backend/Processed_PNGs/
+backend/Processed_PNGs_cropped/
+backend/uploads/
+*.dcm
+*.dicom
