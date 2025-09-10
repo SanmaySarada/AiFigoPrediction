@@ -31,10 +31,8 @@ node_modules/
 *.temp
 
 # PATIENT DATA - NEVER COMMIT
-backend/Processed_PNGs/*
-!backend/Processed_PNGs/.gitkeep
-backend/Processed_PNGs_cropped/*
-!backend/Processed_PNGs_cropped/.gitkeep
+backend/Processed_PNGs/
+backend/Processed_PNGs_cropped/
 backend/uploads/*
 !backend/uploads/.gitkeep
 *.dcm
