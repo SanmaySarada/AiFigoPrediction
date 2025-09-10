@@ -277,7 +277,7 @@ function App() {
       
       // Convert ensemble result to our prediction format
       const finalResult = ensembleResult.prob * 100 // Convert probability to percentage
-      const confidence = Math.min(ensembleResult.prob + 0.1, 1.0) // Add some confidence based on probability
+      const confidence = ensembleResult.prob // Use actual probability as confidence - no artificial boost
       
       console.log('Converted values:', { finalResult, confidence, ensembleResult })
       
@@ -289,21 +289,9 @@ function App() {
         ensembleResult // Include the full ensemble result for debugging
       }
     } catch (err) {
-      // Fallback to simulation if ensemble fails
-      console.warn('Ensemble prediction failed, using simulation:', err)
-      return new Promise<PredictionResult>((resolve) => {
-        setTimeout(() => {
-          const finalResult = Math.random() * 100
-          const confidence = Math.random() * 0.3 + 0.7
-          
-          resolve({
-            filePrediction: null,
-            numericalPrediction: null,
-            finalResult,
-            confidence
-          })
-        }, 2000)
-      })
+      // Proper error handling - no random numbers for medical applications
+      console.error('Ensemble prediction failed:', err)
+      throw new Error('Prediction service is currently unavailable. Please try again later or contact support.')
     }
   }
 
@@ -316,8 +304,9 @@ function App() {
     try {
       const result = await simulatePrediction()
       setPredictionResult(result)
-    } catch (err) {
-      setError('An error occurred during prediction. Please try again.')
+    } catch (err: any) {
+      // Show specific error message from the prediction service
+      setError(err.message || 'An error occurred during prediction. Please try again.')
     } finally {
       setIsProcessing(false)
     }
