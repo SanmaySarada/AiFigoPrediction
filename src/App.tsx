@@ -373,7 +373,7 @@ function App() {
         {/* File Upload and Numerical Input Sections */}
         <Box sx={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'center', width: '100%' }}>
           {/* File Upload Section */}
-          <Paper elevation={3} sx={{ p: 3, flex: 1, minWidth: 300 }}>
+          <Paper elevation={3} sx={{ p: 3, flex: '0 1 520px', minWidth: 320, maxWidth: 560 }}>
             <Box textAlign="center" mb={3}>
               <FileTextIcon sx={{ fontSize: 48, color: '#1976d2' }} />
               <Typography variant="h5" component="h2" gutterBottom>
@@ -445,7 +445,7 @@ function App() {
           </Paper>
 
           {/* Numerical Input Section */}
-          <Paper elevation={3} sx={{ p: 3, flex: 1, minWidth: 300 }}>
+          <Paper elevation={3} sx={{ p: 3, flex: '0 1 520px', minWidth: 320, maxWidth: 560 }}>
             <Box textAlign="center" mb={3}>
               <CalculateIcon sx={{ fontSize: 48, color: '#1976d2' }} />
               <Typography variant="h5" component="h2" gutterBottom>
