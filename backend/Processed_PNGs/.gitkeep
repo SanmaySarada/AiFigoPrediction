@@ -1,0 +1,2 @@
+# Keep this directory in Git but ignore all files inside
+# This directory is needed for DICOM processing but should never contain patient data
